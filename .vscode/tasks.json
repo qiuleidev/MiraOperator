@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}/build" // 构建目录隔离源码
+  },
+  "tasks": [
+    {
+      "label": "clean folder",
+      "type": "shell",
+      "command": "rm",
+      "args": ["-rf","*"] //
+    },
+    {
+      "label": "cmake configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": [".."] // 生成Debug版Makefile
+    },
+    {
+      "label": "make build",
+      "type": "shell",
+      "command": "make",
+      "args": ["-j8"] // 并行编译加速
+    },
+    {
+      "label": "CMake Build Chain", // 与launch.json的preLaunchTask对应
+      "dependsOrder": "sequence", // 保证顺序执行
+      "dependsOn": ["clean folder","cmake configure", "make build"] // 任务依赖链
+    }
+  ]
+}
