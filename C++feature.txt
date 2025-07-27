@@ -1,0 +1,169 @@
+#C++98
+1."#"在宏定义#define的内部，有将参数转换为字符串字面量的作用。
+__FILE__宏：替换为当前源文件的绝对或相对路径（字符串字面量）
+__LINE__宏：替换为宏所在行的行号（整数常量）
+#csrc/utils/exception.hpp
+#define MO_HOST_ASSERT(cond) \
+do { \
+    if (not (cond)) { \
+        throw MOException("Assertion", __FILE__, __LINE__, #cond); \
+    } \
+} while (0)
+比如传入表达式a+b，#cond会将其转化为"a+b"
+
+2.and和or：等价于"&&"和"||",需包含<ciso646>
+C++11:无需包含头文件了
+
+#csrc/utils/system.hpp
+MO_HOST_ASSERT(false and "Unexpected type");
+
+3.虚函数
+= 0是纯虚函数，派生类必须重写，而{}是普通虚函数，派生类可以选择性重写。
+
+#csrc/jit/complier.hpp
+virtual void compile(const std::string &code, const std::filesystem::path& dir_path, const std::filesystem::path &cubin_path) const = 0;
+派生类必须重写。
+
+4.CRTP(奇异递归模板模式)
+class Derived : public Base<Derived> { ... }
+可以实现类似虚函数的效果并避免了虚函数的开销，并可以进行内联（可以内联是提速主要原因）。
+
+
+
+------------------------------------------------------------------------------------------------------------
+#C++11
+------------------------------------------------------------------------------------------------------------
+1.explicit：禁止隐式类型a转换，但内置类型转换(int->double等)和派生类到基类的转换仍然允许。
+explicit一般用于修饰构造函数，会禁止隐式调用构造函数。
+即禁止 Example obj = 10;这种写法，只能使用Example obj(10)这种写法。
+------------------------------------------------------------------------------------------------------------
+2.noexcept:表示函数不会抛出异常，省略异常处理逻辑代码
+析构函数默认隐式noexcept
+移动构造函数和移动赋值操作、析构函数、swap必须要声明为noexcept
+逻辑简单，性能关键的函数可以声明为noexcept优化抛出异常的代码
+
+抛出异常的情况：
+系统资源问题​​
+
+    ​内存分配失败​​：如 new 操作失败时抛出 std::bad_alloc 
+    ​​文件/网络操作失败​​：如文件不存在、网络断开等，通常通过标准库（如 std::ifstream）或自定义异常抛出错误。
+
+​​逻辑错误​​
+
+    ​​无效操作​​：除零错误（b == 0）、越界访问（std::vector::at() 抛出 std::out_of_range）
+​   ​状态冲突​​：如线程同步失败、对象未初始化等，常通过自定义异常（如 InvalidStateException）抛出。
+
+自定义异常
+
+不会分配内存、修改数据或执行任何可能失败的操作​​​​的函数都可以声明为noexcept
+------------------------------------------------------------------------------------------------------------
+3.static_assert(cond)：在编译期计算 cond 表达式。若为 false，则中断编译并输出错误消息；若为 true，则不生成任何代码。
+
+#csrc/utils/exception.hpp
+#ifndef MO_STATIC_ASSERT
+#define MO_STATIC_ASSERT(cond, ...) static_assert(cond, __VA_ARGS__)
+#endif
+...：代表可变参数
+__VA_ARGS__宏：代表任意文本，...在预处理阶段会将传入的文本替换到__VA_ARGS__宏，是一个纯文本替换
+比如：MO_STATIC_ASSERT(cond,"string",1.0)会被替换为static_assert(cond,"string",1.0);//但这不会通过编译，因为static_assert
+只接受两个参数
+------------------------------------------------------------------------------------------------------------
+4.constexpr关键字：constexpr函数传入常量时会在编译时计算结果，传入非常量时会退化为普通运行时函数。
+C++11：函数只能包含单条return语句
+C++14：函数可以支持复杂逻辑了，可包含多条语句。
+C++17:if可以定义为constexpr，实现编译时条件分支​​。未编译的分支不会产生任何机器码。
+C++20：允许虚函数为constexpr，并支持try-catch。
+
+#csrc/utils/system.hpp
+if constexpr (std::is_same_v<dtype_t, std::string>) {
+    return std::string(c_str);
+} else if constexpr (std::is_same_v<dtype_t, int>) {
+    int value;
+    std::sscanf(c_str, "%d", &value);//将c_str转化为整数并存在value中
+    return value;
+} else {
+    MO_HOST_ASSERT(false and "Unexpected type");//这里"Unexpected type"会隐式转化为true，但是用了一个false，因此
+    //这样写可以保证触发断言并将"Unexpected type"传入参数
+}
+
+------------------------------------------------------------------------------------------------------------
+5.lambda函数：[capture-list] (parameters) -> return-type { function-body }
+C++14:支持默认参数、泛型、广义捕获、返回lambda表达式
+C++17:支持constexpr、*this捕获
+C++20：支持显式模板、变参捕获
+-> return-type大部分时间都可以省略，只要编译器能推断出返回值
+
+#csrc/utils/system.hpp
+const auto& deleter = [](FILE* f) { if (f) pclose(f); };
+这里定义了一个匿名类，用auto&接收了，相当于：
+class __AnonymousLambda {
+public:
+    // 重载 operator() 实现函数行为
+    void operator()(FILE* f) const {
+        if (f) pclose(f);
+    }
+};
+
+const __AnonymousLambda& deleter = __AnonymousLambda();
+
+后面需要deleter类型的时候使用decltype(deleter)即可。
+
+------------------------------------------------------------------------------------------------------------
+6.unique_ptr需要自定义删除器时要传入两个参数
+使用自定义删除器的典型场景包括：管理需要特殊清理的资源（如文件、管道、网络连接等）
+这时unique_ptr析构时不调用delete而是用自定义删除器
+#csrc/utils/system.hpp
+std::unique_ptr<FILE, decltype(deleter)> pipe(popen(command.c_str(), "r"), deleter);
+
+
+------------------------------------------------------------------------------------------------------------
+#C++17
+------------------------------------------------------------------------------------------------------------
+1.if里的“;”,这样iterator的作用域只在if-else语句中
+
+#csrc/jit/cache.hpp
+ if (const auto& iterator = cache.find(dir_path); iterator != cache.end())
+
+2.std::is_same<T, U>::value和std::is_same_v<T, U>
+这两个表达式返回的值都是T和U的类型是否相等。前者在C++11引入，后者在C++17引入。
+
+3.filesystem库
+进行各种文件操作。
+重载了"/"操作符，作为文件路径拼接符。
+
+#csrc/jit/complier.hpp
+return make_tmp_dir() / get_uuid();
+这里不是做除法而是拼接两个文件路径
+
+------------------------------------------------------------------------------------------------------------
+#C++20
+concept关键字，为模板参数加上语义限制，让错误提示更友好
+C++20 标准库已经内置了一些常用的 concept，例如：
+
+    std::integral
+    std::floating_point
+    std::copyable
+    std::equality_comparable
+
+concept 概念 = requires(T t){
+    {表达式要求} -> 约束条件
+}
+表达式要求检查T是否支持表达式，约束条件约束了表达式要求的返回类型
+
+#csrc/jit/kernel_runtime.hpp
+template <typename T>
+concept HasLaunchArgs = requires (const T& t) {//检查成员是否有launch_args
+//并且launch_args可以转化为自身，(要求类型是完整、非抽象且可用的)
+    { t.launch_args } -> std::convertible_to<decltype(t.launch_args)>;
+};
+------------------------------------------------------------------------------------------------------------
+# 杂项
+1.Linux的命令行的"2>&1";
+命令行的2代表strerr，1代表strout。
+#csrc/utils/system.hpp
+
+    command = command + " 2>&1";
+    如果command是gcc file.c，那么这表示err和out都会输出到file.c中。
+
+
+2.R"(string str)":将括号里面的str转化成字面量，防止转义字符的作用
