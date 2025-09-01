@@ -5,20 +5,28 @@ import subprocess
 from setuptools import find_packages
 from setuptools.command.build_py import build_py
 from torch.utils.cpp_extension import CppExtension, CUDA_HOME
-
+os.environ['MO_JIT_DEBUG'] = '1'
+os.environ['MO_JIT_PRINT_COMPILER_COMMAND'] = '1'
 current_dir = os.path.dirname(os.path.realpath(__file__))
+conda_prefix = os.environ.get("CONDA_PREFIX", "")
+conda_include = os.path.join(conda_prefix, "include")
+conda_lib = os.path.join(conda_prefix, "lib")
 cxx_flags = ['-std=c++20', '-O3', '-fPIC', '-Wno-psabi']
+cxx_flags += ['-g']
 sources = ['csrc/python_api.cpp']
 build_include_dirs = [
     f'{CUDA_HOME}/include',
     'MiraOperator/include',
     'third-party/cutlass/include',
     'third-party/fmt/include',
+    conda_include,
+    current_dir
 ]
 build_libraries = ['cuda', 'cudart']
 build_library_dirs = [
     f'{CUDA_HOME}/lib64',
-    f'{CUDA_HOME}/lib64/stub'
+    f'{CUDA_HOME}/lib64/stub',
+    conda_lib, 
 ]
 third_party_include_dirs = [
     'third-party/cutlass/include/cute',

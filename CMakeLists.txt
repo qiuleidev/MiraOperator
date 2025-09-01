@@ -11,7 +11,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -fPIC -Wno-psabi")
 
 find_package(CUDAToolkit REQUIRED)
 find_package(pybind11 REQUIRED)
-find_package(Torch REQUIRED)
+find_package(Torch REQUIRED PATHS "/mnt/ubuntu_data/anaconda3/envs/DeepGEMM/lib/python3.12/site-packages/torch/share/cmake/Torch" NO_DEFAULT_PATH)
 
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 20)
@@ -31,3 +31,5 @@ target_link_libraries(mira_operator_cpp PRIVATE ${TORCH_LIBRARIES} torch_python 
 
 # Enable kernel code indexing with CMake-based IDEs
 add_library(mira_operator_indexing_cuda STATIC csrc/indexing/main.cu)
+
+add_executable(python_api_debug csrc/python_api.cpp)

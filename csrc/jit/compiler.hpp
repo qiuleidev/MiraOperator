@@ -131,7 +131,8 @@ class NVCCCompiler final: public Compiler {
 
 public:
     NVCCCompiler(const std::filesystem::path& library_root_path,
-                 const std::filesystem::path& cuda_home_path_by_torch):
+                 const std::filesystem::path& cuda_home_path_by_torch,
+                const std::string sm_version = "sm_89"):
             Compiler(library_root_path) {
         // Override the compiler signature
         nvcc_path = cuda_home_path_by_torch / "bin" / "nvcc";
@@ -140,10 +141,11 @@ public:
         const auto& [nvcc_major, nvcc_minor] = get_nvcc_version();
         signature = fmt::format("NVCC{}.{}", nvcc_major, nvcc_minor);
         // The override the compiler flags
-        flags = fmt::format("{} -I{} --gpu-architecture=sm_89 "
+
+        flags = fmt::format("{} -I{} --gpu-architecture={} "
                             "--compiler-options=-fPIC,-O3,-fconcepts,-Wno-deprecated-declarations,-Wno-abi "
                             "-cubin -O3 --expt-relaxed-constexpr --expt-extended-lambda",
-                            flags, library_include_path.c_str());
+                            flags, library_include_path.c_str(), sm_version.c_str());
     }
 
     void compile(const std::string &code, const std::filesystem::path& dir_path, const std::filesystem::path &cubin_path) const override {

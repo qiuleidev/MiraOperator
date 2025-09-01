@@ -25,5 +25,7 @@ from mira_operator_cpp import (
 
 # Kernels
 from mira_operator_cpp import (
-    fp32_add
+    fp32_elementwise,
+    simple_gemm,
+    reduce
 )

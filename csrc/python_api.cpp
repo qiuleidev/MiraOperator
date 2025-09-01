@@ -3,55 +3,155 @@
 
 #include "jit/compiler.hpp"
 #include "jit/device_runtime.hpp"
-#include "jit_kernels/elementadd/fp32_element_add.hpp"
+#include "jit_kernels/elementwise/fp32_elementwise.hpp"
+#include "jit_kernels/gemm/simple_gemm.hpp"
+#include "jit_kernels/reduce/reduce.hpp"
 #include "utils/exception.hpp"
-
+#include <cutlass/core_io.h> 
+#include <cutlass/numeric_types.h>
+#include <cute/tensor.hpp>
 #ifndef TORCH_EXTENSION_NAME
 #define TORCH_EXTENSION_NAME mira_operator_cpp
 #endif
 namespace MiraOperator{
-torch::Tensor fp32_add(const torch::Tensor& a, const torch::Tensor& b) {
+torch::Tensor fp32_elementwise(const torch::Tensor& a, const torch::Tensor& b,const char op) {
     // 假设a, b均为float32且shape一致且在CUDA上
     MO_HOST_ASSERT(a.device().is_cuda() && b.device().is_cuda());
     MO_HOST_ASSERT(a.scalar_type() == torch::kFloat && b.scalar_type() == torch::kFloat);
     MO_HOST_ASSERT(a.sizes() == b.sizes());
     int n = a.numel();
     auto c = torch::empty_like(a);
-
     // 获取输入tensor的GPU指针
-    float* ta = a.data_ptr<float>();
-    float* tb = b.data_ptr<float>();
-    float* tc = c.data_ptr<float>();
+    float* pa = a.data_ptr<float>();
+    float* pb = b.data_ptr<float>();
+    float* pc = c.data_ptr<float>();
     
     // 生成kernel代码
-    std::string code = generate_add_kernel_code(ta, tb, tc, n);
+    int threads = 512;
+    int blocks = (n + threads - 1) / threads;
+    const ElementWiseRuntime::Args& args = {
+        .n = n,.op = op,
+        .a = pa,.b = pb,.c = pc,
+        .launch_args = LaunchArgs(blocks,threads)
+    };
+    const auto& code = ElementWiseRuntime::generate(args);
 
     // JIT编译并获取kernel runtime
-    auto kernel_runtime = compiler->build("fp32_element_add", code);
-
-    std::cout<<code<<std::endl;
-
-    // kernel launch参数
-    int threads = 256;
-    int blocks = (n + threads - 1) / threads;
-    cudaLaunchConfig_t config;
-    config.gridDim = {static_cast<unsigned>(blocks), 1, 1};
-    config.blockDim = {static_cast<unsigned>(threads), 1, 1};
-    config.dynamicSmemBytes = 0;
-    config.stream = at::cuda::getCurrentCUDAStream();
-    config.numAttrs = 0;
+    auto kernel_runtime = compiler->build("fp32_elementwise", code);
 
     // 启动kernel
-    cudaLaunchKernelEx(&config, kernel_runtime->kernel, ta, tb, tc, n);
+    ElementWiseRuntime::launch(kernel_runtime,args);
     
     // 同步GPU，确保计算完成
     cudaDeviceSynchronize();
     
-    // 打印结果（从GPU内存复制到CPU）
-    float result;
-    cudaMemcpy(&result, tc, sizeof(float), cudaMemcpyDeviceToHost);
     return c;
 }
+
+template <typename T>
+void gen_rand_data(T *data, int n) {
+  for (int i = 0; i < n; ++i) {
+    float v = (rand() % 200 - 100) * 0.01;
+    data[i] = v;
+  }
+}
+
+torch::Tensor simple_gemm(const torch::Tensor& a, const torch::Tensor& b, torch::Tensor& c) {
+    MO_HOST_ASSERT(a.device().is_cuda() && b.device().is_cuda() && c.device().is_cuda());
+    MO_HOST_ASSERT(a.scalar_type() == torch::kHalf && b.scalar_type() == torch::kHalf && c.scalar_type() == torch::kHalf);
+    MO_HOST_ASSERT(a.sizes()[0] == c.sizes()[0] && a.sizes()[1] == b.sizes()[1] && b.sizes()[0] == c.sizes()[1]);
+    using namespace cute;
+    using T = cute::half_t;
+    int m = a.sizes()[0],n = c.sizes()[1],k = a.sizes()[1];
+    constexpr int kTileM = 128; 
+    constexpr int kTileN = 128; 
+    constexpr int kTileK = 32; 
+
+    static_assert(sizeof(cute::half_t) == sizeof(c10::Half), 
+              "cute::half_t and c10::Half must have the same size");
+    static_assert(alignof(cute::half_t) == alignof(c10::Half), 
+              "cute::half_t and c10::Half must have the same alignment");
+    //data_ptr()不要传模板参数，直接转化.要打印Aptr的值先复制到cpu上
+    T* Aptr = reinterpret_cast<T*>(a.data_ptr());
+    T* Bptr = reinterpret_cast<T*>(b.data_ptr());
+    T* Cptr = reinterpret_cast<T*>(c.data_ptr());
+    //注意编译的时候设置arch=sm_80，否则用不了此tensorcore
+    using mma_op = SM80_16x8x16_F16F16F16F16_TN;
+    using mma_traits = MMA_Traits<mma_op>;
+    using mma_atom = MMA_Atom<mma_traits>;
+    using MMA = decltype(make_tiled_mma(mma_atom{}, 
+                      Layout(Shape<_2, _2, _1>{}), //2*2*32 = 128个线程，线程在MN方向上分别重复两次
+                      Tile<_32, _32, _16>{}));//最终处理的分块大小，在MK方向上刚执行好1次，在N方向上要执行两次
+    //make_tile();
+    int block(size(MMA{}));
+    std::pair<int,int> grid(n / kTileN, m / kTileM);
+    printf("grid = (%d, %d), block = %d\n", grid.first, grid.second, block);
+    // 生成kernel代码
+    const SimpleGEMMRuntime<T,MMA>::Args& args = {
+        .m = m,.n = n,.k = k,
+        .a = Aptr,.b = Bptr,.c = Cptr,
+        .kTileM = kTileM,.kTileN = kTileN,.kTileK = kTileK,
+        .launch_args = LaunchArgs(grid, block)
+    };
+    const auto& code = SimpleGEMMRuntime<T,MMA>::generate(args);
+
+    // JIT编译并获取kernel runtime
+    auto kernel_runtime = compiler->build("simple_gemm", code);
+    // 启动kernel
+    SimpleGEMMRuntime<T,MMA>::launch(kernel_runtime,args);
+    // 同步GPU，确保计算完成
+    cudaDeviceSynchronize();
+    return c;
+}
+
+torch::Tensor reduce(const torch::Tensor& input, const torch::Tensor& output){
+    MO_HOST_ASSERT(input.device().is_cuda() && output.device().is_cuda());
+    MO_HOST_ASSERT(input.sizes() == output.sizes());
+    int n = input.numel();
+    auto dtype = input.scalar_type();
+    
+    // 初始化 output 为 0
+    output.zero_();
+    int num_threads = 512;
+    int num_blocks = (n + num_threads - 1) /num_threads;
+    switch (dtype) {
+        case torch::kFloat32: {
+            auto input_ptr = input.data_ptr<float>();
+            auto output_ptr = output.data_ptr<float>();
+            const ReduceRuntime<float>::Args& args = {
+                .n = n,
+                .input = input_ptr,
+                .output = output_ptr,
+                .launch_args = LaunchArgs(num_blocks, num_threads)
+            };
+            const auto& code = ReduceRuntime<float>::generate(args);
+            auto kernel_runtime = compiler->build("reduce",code);
+            ReduceRuntime<float>::launch(kernel_runtime,args);
+            cudaDeviceSynchronize();
+            break;
+        }
+        case torch::kFloat16: {
+            auto input_ptr = reinterpret_cast<half*>(input.data_ptr());
+            auto output_ptr = reinterpret_cast<half*>(output.data_ptr());
+            const ReduceRuntime<half>::Args& args = {
+                .n = n,
+                .input = input_ptr,
+                .output = output_ptr,
+                .launch_args = LaunchArgs(num_blocks, num_threads)
+            };
+            const auto& code = ReduceRuntime<half>::generate(args);
+            auto kernel_runtime = compiler->build("reduce",code);
+            ReduceRuntime<half>::launch(kernel_runtime,args);
+            cudaDeviceSynchronize();
+            break;
+        }
+        default: {
+            throw std::runtime_error("Unsupported data type for reduction");
+        }
+    }
+    return output;
+}
+} // namespace MiraOperator
 // ReSharper disable once CppParameterMayBeConstPtrOrRef
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     using namespace MiraOperator;
@@ -68,59 +168,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // JIT
     m.def("init", [&](const std::string& library_root_path, const std::string& cuda_home_path_by_torch) {
         MO_HOST_ASSERT(get_env("MO_JIT_USE_NVRTC", 0) == 0 and "Currently only support NVCC");
-        compiler = std::make_shared<NVCCCompiler>(library_root_path, cuda_home_path_by_torch);
+        compiler = std::make_shared<NVCCCompiler>(library_root_path, cuda_home_path_by_torch,"sm_80");
         KernelRuntime::set_cuda_home(cuda_home_path_by_torch);
     });
 
-    //element add kernel
-    m.def("fp32_add", &fp32_add, py::arg("a"), py::arg("b"), "Elementwise add using JIT kernel");
+    m.def("fp32_elementwise", &fp32_elementwise, py::arg("a"), py::arg("b"),py::arg("op"), "Elementwise using JIT kernel");
 
-    // Stable kernel APIs with automatic arch/layout dispatch
-//     m.def("fp8_gemm_nt", &fp8_gemm_nt,
-//           py::arg("a"), py::arg("b"), py::arg("d"),
-//           py::arg("c") = std::nullopt, py::arg("recipe") = std::nullopt,
-//           py::arg("compiled_dims") = "nk",
-//           py::arg("disable_ue8m0_cast") = false);
-//     m.def("fp8_gemm_nn", &fp8_gemm_nn,
-//           py::arg("a"), py::arg("b"), py::arg("d"),
-//           py::arg("c") = std::nullopt, py::arg("recipe") = std::nullopt,
-//           py::arg("compiled_dims") = "nk",
-//           py::arg("disable_ue8m0_cast") = false);
-//     m.def("fp8_gemm_tn", &fp8_gemm_tn,
-//           py::arg("a"), py::arg("b"), py::arg("d"),
-//           py::arg("c") = std::nullopt, py::arg("recipe") = std::nullopt,
-//           py::arg("compiled_dims") = "mn",
-//           py::arg("disable_ue8m0_cast") = false);
-//     m.def("fp8_gemm_tt", &fp8_gemm_tt,
-//           py::arg("a"), py::arg("b"), py::arg("d"),
-//           py::arg("c") = std::nullopt, py::arg("recipe") = std::nullopt,
-//           py::arg("compiled_dims") = "mn",
-//           py::arg("disable_ue8m0_cast") = false);
-//     m.def("m_grouped_fp8_gemm_nt_contiguous", &m_grouped_fp8_gemm_nt_contiguous,
-//           py::arg("a"), py::arg("b"), py::arg("d"), py::arg("m_indices"),
-//           py::arg("recipe") = std::nullopt, py::arg("compiled_dims") = "nk",
-//           py::arg("disable_ue8m0_cast") = false);
-//     m.def("m_grouped_fp8_gemm_nn_contiguous", &m_grouped_fp8_gemm_nn_contiguous,
-//           py::arg("a"), py::arg("b"), py::arg("d"), py::arg("m_indices"),
-//           py::arg("recipe") = std::nullopt, py::arg("compiled_dims") = "nk",
-//           py::arg("disable_ue8m0_cast") = false);
-//     m.def("fp8_m_grouped_gemm_nt_masked", &fp8_m_grouped_gemm_nt_masked,
-//           py::arg("a"), py::arg("b"), py::arg("d"), py::arg("masked_m"),
-//           py::arg("expected_m"), py::arg("recipe") = std::nullopt,
-//           py::arg("compiled_dims") = "nk", py::arg("disable_ue8m0_cast") = false);
-//     m.def("k_grouped_fp8_gemm_tn_contiguous", &k_grouped_fp8_gemm_tn_contiguous,
-//           py::arg("a"), py::arg("b"), py::arg("d"), py::arg("ks"),
-//           py::arg("ks_tensor"), py::arg("c") = std::nullopt,
-//           py::arg("recipe") = std::make_tuple(1, 1, 128),
-//           py::arg("compiled_dims") = "mn");
-//     m.def("transform_sf_into_required_layout", &transform_sf_into_required_layout);
+    m.def("simple_gemm", &simple_gemm, py::arg("a"), py::arg("b"), py::arg("c"),"Simple GEMM using JIT kernel");
 
-//     // Raw kernels or functions
-//     m.def("get_tma_aligned_size", &get_tma_aligned_size);
-//     m.def("get_mk_alignment_for_contiguous_layout", &get_mk_alignment_for_contiguous_layout);
-//     m.def("get_mn_major_tma_aligned_tensor", &get_mn_major_tma_aligned_tensor);
-//     m.def("get_mn_major_tma_aligned_packed_ue8m0_tensor", &get_mn_major_tma_aligned_packed_ue8m0_tensor);
-//     m.def("get_k_grouped_mn_major_tma_aligned_packed_ue8m0_tensor", &get_k_grouped_mn_major_tma_aligned_packed_ue8m0_tensor);
-}
-
+    m.def("reduce",&reduce,py::arg("input"),py::arg("output"),"Reduce using JIT kernel");
 }

@@ -137,7 +137,7 @@ return make_tmp_dir() / get_uuid();
 
 ------------------------------------------------------------------------------------------------------------
 #C++20
-concept关键字，为模板参数加上语义限制，让错误提示更友好
+1.concept关键字，为模板参数加上语义限制，让错误提示更友好,方便得实现traits，也就是自定义类型和系统类型能用同一个接口实现功能
 C++20 标准库已经内置了一些常用的 concept，例如：
 
     std::integral
@@ -156,6 +156,16 @@ concept HasLaunchArgs = requires (const T& t) {//检查成员是否有launch_arg
 //并且launch_args可以转化为自身，(要求类型是完整、非抽象且可用的)
     { t.launch_args } -> std::convertible_to<decltype(t.launch_args)>;
 };
+
+2.指派初始化器（Designated Initializers），使得初始化顺序无关，并且可嵌套，报错提示也更友好
+
+#csrc/python_api.cpp
+const ElementAddRuntime::Args& args = {
+    .n = n,
+    .a = pa,.b = pb,.c = pc,
+    .launch_args = LaunchArgs(blocks,threads)
+};
+
 ------------------------------------------------------------------------------------------------------------
 # 杂项
 1.Linux的命令行的"2>&1";
