@@ -120,7 +120,7 @@ def test_reduce_correctness():
     torch_result = torch.sum(input_tensor)
     
     custom_result = output_tensor[0]
-    ds
+    
     print(f"PyTorch result: {torch_result.item():.6f}")
     print(f"Custom result: {custom_result.item():.6f}")
     print(f"Difference: {abs(torch_result - custom_result).item():.6e}")
@@ -178,7 +178,7 @@ def test_reduce_different_sizes():
             # 测试custom kernel
             custom_time = bench_kineto(
                 fn=run_custom_reduce,
-                kernel_names=kernel_name,  
+                kernel_names="block_reduce",  
                 num_tests=20,
                 suppress_kineto_output=True
             )
@@ -221,7 +221,7 @@ def test_reduce_different_sizes():
             # 测试custom kernel
             custom_time = bench_kineto(
                 fn=run_custom_reduce,
-                kernel_names=kernel_name,  
+                kernel_names="block_reduce",  
                 num_tests=20,
                 suppress_kineto_output=True
             )

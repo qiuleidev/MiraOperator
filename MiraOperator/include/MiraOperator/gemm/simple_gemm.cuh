@@ -41,7 +41,7 @@ namespace MiraOperator{
     for(int itile = 0; itile < num_tile_k; ++itile) {
         cute::copy(tAgA(_, _, _, itile), tArA);
         cute::copy(tBgB(_, _, _, itile), tBrB);
-        cute::gemm(tiled_mma, tCrC, tArA, tBrB, tCrC);
+        cute::gemm(tiled_mma, tCrC, tArA, tBrB, tCrC);//D = A*B + C;
     }
 
     cute::copy(tCrC, tCgC); 

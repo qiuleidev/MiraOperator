@@ -27,5 +27,6 @@ from mira_operator_cpp import (
 from mira_operator_cpp import (
     fp32_elementwise,
     simple_gemm,
+    cute_gemm,
     reduce
 )

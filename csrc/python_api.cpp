@@ -5,11 +5,15 @@
 #include "jit/device_runtime.hpp"
 #include "jit_kernels/elementwise/fp32_elementwise.hpp"
 #include "jit_kernels/gemm/simple_gemm.hpp"
+#include "jit_kernels/gemm/cute_gemm.hpp"
 #include "jit_kernels/reduce/reduce.hpp"
 #include "utils/exception.hpp"
 #include <cutlass/core_io.h> 
 #include <cutlass/numeric_types.h>
 #include <cute/tensor.hpp>
+#include <cute/numeric/math.hpp>
+#include <cute/arch/copy_sm80.hpp>
+#include <cute/arch/copy_sm75.hpp>
 #ifndef TORCH_EXTENSION_NAME
 #define TORCH_EXTENSION_NAME mira_operator_cpp
 #endif
@@ -79,13 +83,14 @@ torch::Tensor simple_gemm(const torch::Tensor& a, const torch::Tensor& b, torch:
     using mma_op = SM80_16x8x16_F16F16F16F16_TN;
     using mma_traits = MMA_Traits<mma_op>;
     using mma_atom = MMA_Atom<mma_traits>;
+
+    //对应一个block
     using MMA = decltype(make_tiled_mma(mma_atom{}, 
-                      Layout(Shape<_2, _2, _1>{}), //2*2*32 = 128个线程，线程在MN方向上分别重复两次
-                      Tile<_32, _32, _16>{}));//最终处理的分块大小，在MK方向上刚执行好1次，在N方向上要执行两次
+                      Layout(Shape<_2, _2, _1>{}), //2*2*32 = 128个线程，线程在MN方向上分别重复两次，也就是一个block有4个warp协作完成
+                      Tile<_32, _32, _16>{}));//最终一个block处理的分块大小，在MK方向上刚执行好1次，在N方向上要执行两次
     //make_tile();
     int block(size(MMA{}));
     std::pair<int,int> grid(n / kTileN, m / kTileM);
-    printf("grid = (%d, %d), block = %d\n", grid.first, grid.second, block);
     // 生成kernel代码
     const SimpleGEMMRuntime<T,MMA>::Args& args = {
         .m = m,.n = n,.k = k,
@@ -103,7 +108,43 @@ torch::Tensor simple_gemm(const torch::Tensor& a, const torch::Tensor& b, torch:
     cudaDeviceSynchronize();
     return c;
 }
+//除了tensorCore以外增加了流水线和copy抽象进一步增加效率
+torch::Tensor cute_gemm(const torch::Tensor& a, const torch::Tensor& b, torch::Tensor& c){
+    MO_HOST_ASSERT(a.device().is_cuda() && b.device().is_cuda() && c.device().is_cuda());
+    MO_HOST_ASSERT(a.scalar_type() == torch::kHalf && b.scalar_type() == torch::kHalf && c.scalar_type() == torch::kHalf);
+    MO_HOST_ASSERT(a.sizes()[0] == c.sizes()[0] && a.sizes()[1] == b.sizes()[1] && b.sizes()[0] == c.sizes()[1]);
+    using namespace cute;
+    using T = cute::half_t;
+    int m = a.sizes()[0],n = c.sizes()[1],k = a.sizes()[1];
 
+    static_assert(sizeof(cute::half_t) == sizeof(c10::Half), 
+              "cute::half_t and c10::Half must have the same size");
+    static_assert(alignof(cute::half_t) == alignof(c10::Half), 
+              "cute::half_t and c10::Half must have the same alignment");
+    //data_ptr()不要传模板参数，直接转化.要打印Aptr的值先复制到cpu上
+    T* Aptr = reinterpret_cast<T*>(a.data_ptr());
+    T* Bptr = reinterpret_cast<T*>(b.data_ptr());
+    T* Cptr = reinterpret_cast<T*>(c.data_ptr());
+
+    GEMMConfig<T> gemm_config;
+    int block = gemm_config.kThreadNum;
+    std::pair<int,int> grid((n + gemm_config.kTileN - 1) / gemm_config.kTileN,(m + gemm_config.kTileM - 1) / gemm_config.kTileM);
+    const CuteGEMMRuntime<T,GEMMConfig<T>>::Args& args = {
+        .m = m,.n = n,.k = k,
+        .a = Aptr,.b = Bptr,.c = Cptr,
+        .launch_args = LaunchArgs(grid,block,gemm_config.kShmSize)
+    };
+
+    const auto& code = CuteGEMMRuntime<T,GEMMConfig<T>>::generate(args);
+
+    auto kernel_runtime = compiler->build("cute_gemm", code);
+    // 启动kernel
+    CuteGEMMRuntime<T,GEMMConfig<T>>::launch(kernel_runtime,args);
+    // 同步GPU，确保计算完成
+    cudaDeviceSynchronize();
+    return c;
+
+}
 torch::Tensor reduce(const torch::Tensor& input, const torch::Tensor& output){
     MO_HOST_ASSERT(input.device().is_cuda() && output.device().is_cuda());
     MO_HOST_ASSERT(input.sizes() == output.sizes());
@@ -175,6 +216,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("fp32_elementwise", &fp32_elementwise, py::arg("a"), py::arg("b"),py::arg("op"), "Elementwise using JIT kernel");
 
     m.def("simple_gemm", &simple_gemm, py::arg("a"), py::arg("b"), py::arg("c"),"Simple GEMM using JIT kernel");
+
+    m.def("cute_gemm", &cute_gemm, py::arg("a"), py::arg("b"), py::arg("c"),"Cute GEMM using JIT kernel");
 
     m.def("reduce",&reduce,py::arg("input"),py::arg("output"),"Reduce using JIT kernel");
 }

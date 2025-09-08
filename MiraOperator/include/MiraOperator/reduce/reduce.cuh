@@ -32,7 +32,7 @@ namespace MiraOperator{
                 if(lane == 0)reduce_smem[warp] = sum;
                 __syncthreads();
                 sum = (lane < NUM_WARPS) ? reduce_smem[lane] : 0.0f;
-                if(warp == 0)sum = warp_reduce<float,WARP_SIZE>(sum);
+                if(warp == 0)sum = warp_reduce<float,NUM_WARPS>(sum);
                 if(tid == 0)atomicAdd(output,sum);
                 
                 // //grid_reduce
@@ -55,15 +55,21 @@ namespace MiraOperator{
         }
         else if constexpr (std::is_same_v<T_DECAYED,__half>){
             __shared__ __half reduce_smem[NUM_WARPS];
+            idx *= 2;
             if(idx < n){
                 //block reduce
-                __half reg_input[8] = reinterpret_cast<half4 *> (&input[idx])[0];
-                __half sum = reg_input[0] + reg_input[1] + reg_input[2] + reg_input[3] + reg_input[4] + reg_input[5] + reg_input[6] + reg_input[7];
+                __half reg_input[8];
+                reinterpret_cast<float4*>(&reg_input[0])[0] = reinterpret_cast<float4*> (&input[idx])[0];
+                __half sum = __float2half(0.0f);
+                #pragma unroll
+                for(int i = 0;i < 8;i++){
+                    sum += (idx + i) < n ? reg_input[i] : __float2half(0.0f);
+                }
                 sum = warp_reduce<__half,WARP_SIZE>(sum);
                 if(lane == 0)reduce_smem[warp] = sum;
                 __syncthreads();
                 sum = (lane < NUM_WARPS) ? reduce_smem[lane] : __float2half(0.0f);
-                if(warp == 0)sum = warp_reduce<__half,WARP_SIZE>(sum);
+                if(warp == 0)sum = warp_reduce<__half,NUM_WARPS>(sum);
                 if(tid == 0)atomicAdd(output, sum);
             }
         }
