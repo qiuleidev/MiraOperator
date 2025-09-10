@@ -63,7 +63,7 @@ public:
         }
 
         // Load from the library
-        MO_HOST_ASSERT(symbol_names.size() == 1 || symbol_names.size() == 2);
+        MO_HOST_ASSERT(symbol_names.size() == 1);
         
         MO_CUDA_RUNTIME_CHECK(cudaLibraryLoadFromFile(&library, cubin_path.c_str(), nullptr, nullptr, 0, nullptr, nullptr, 0));
         MO_CUDA_RUNTIME_CHECK(cudaLibraryGetKernel(&kernel, library, symbol_names[0].c_str()));

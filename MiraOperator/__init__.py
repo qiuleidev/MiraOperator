@@ -28,5 +28,7 @@ from mira_operator_cpp import (
     fp32_elementwise,
     simple_gemm,
     cute_gemm,
-    reduce
+    reduce,
+    global_softmax,
+    online_softmax
 )
