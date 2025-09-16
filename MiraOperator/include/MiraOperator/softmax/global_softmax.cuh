@@ -1,5 +1,4 @@
 #pragma once
-#include <cute/tensor.hpp>
 #include <float.h>
 #define WARP_SIZE 32
 #define FLOAT4(value) (reinterpret_cast<float4*>(&(value))[0])
@@ -114,21 +113,22 @@ namespace MiraOperator{
     
     //assume x/y dim <= NUM_THREADS * 4
     template<const int NUM_THREADS = 512>
-    __global__ void global_soft_max_f32_per_token_kernel(float *x,float *y,int N){
+    __global__ void global_soft_max_f32_per_token_kernel(float *x,float *y,int N){//N是token的维度
         const int tid = threadIdx.x;
-        const int idx = (blockIdx.x * blockDim.x + tid) * 4;
+        const int idx = blockIdx.x * N + tid << 2;
+        int col_offset = tid << 2;
         float4 reg_x = reinterpret_cast<float4*>(&x[idx])[0];
-        reg_x.x = (idx + 0 < N) ? reg_x.x : -FLT_MAX;
-        reg_x.y = (idx + 1 < N) ? reg_x.y : -FLT_MAX;
-        reg_x.z = (idx + 2 < N) ? reg_x.z : -FLT_MAX;
-        reg_x.w = (idx + 3 < N) ? reg_x.w : -FLT_MAX;
+        reg_x.x = (col_offset + 0 < N) ? reg_x.x : -FLT_MAX;
+        reg_x.y = (col_offset + 1 < N) ? reg_x.y : -FLT_MAX;
+        reg_x.z = (col_offset + 2 < N) ? reg_x.z : -FLT_MAX;
+        reg_x.w = (col_offset + 3 < N) ? reg_x.w : -FLT_MAX;
         float local_max = fmaxf(fmaxf(reg_x.x,reg_x.y),fmaxf(reg_x.z,reg_x.w));
         float token_max = block_reduce_max<NUM_THREADS>(local_max);
         float local_exp_sum;
-        reg_x.x =  (idx + 0 < N) ? __expf(reg_x.x - token_max) : 0.0f;
-        reg_x.y =  (idx + 1 < N) ? __expf(reg_x.y - token_max) : 0.0f;
-        reg_x.z =  (idx + 2 < N) ? __expf(reg_x.z - token_max) : 0.0f;
-        reg_x.w =  (idx + 3 < N) ? __expf(reg_x.w - token_max) : 0.0f;
+        reg_x.x =  (col_offset + 0 < N) ? __expf(reg_x.x - token_max) : 0.0f;
+        reg_x.y =  (col_offset + 1 < N) ? __expf(reg_x.y - token_max) : 0.0f;
+        reg_x.z =  (col_offset + 2 < N) ? __expf(reg_x.z - token_max) : 0.0f;
+        reg_x.w =  (col_offset + 3 < N) ? __expf(reg_x.w - token_max) : 0.0f;
         local_exp_sum = reg_x.x + reg_x.y + reg_x.z + reg_x.w;
         float token_exp_sum = block_reduce_sum<NUM_THREADS>(local_exp_sum);
         float4 reg_y;

@@ -1,5 +1,4 @@
 #pragma once
-#include <cute/tensor.hpp>
 #include <float.h>
 #define WARP_SIZE 32
 #define FLOAT4(value) (reinterpret_cast<float4*>(&(value))[0])
@@ -26,21 +25,22 @@ namespace MiraOperator{
     }
 
     template<const int NUM_THREADS = 512>
-    __global__ void online_soft_max_f32_per_token_kernel(float *x,float *y,int N){
+    __global__ void online_soft_max_f32_per_token_kernel(float *x,float *y,int N){//N是token的维度
         const int tid = threadIdx.x;
-        const int idx = (blockIdx.x * blockDim.x + tid) * 4;
+        const int idx = blockIdx.x * N + (tid << 2);  // 当前行的起始位置 + 线程偏移(N不一定是2048！)
         float4 reg_x = reinterpret_cast<float4 *>(&x[idx])[0];
-        reg_x.x = (idx + 0 < N) ? reg_x.x : -FLT_MAX;
-        reg_x.y = (idx + 1 < N) ? reg_x.y : -FLT_MAX;
-        reg_x.z = (idx + 2 < N) ? reg_x.z : -FLT_MAX;
-        reg_x.w = (idx + 3 < N) ? reg_x.w : -FLT_MAX;
+        int col_offset = tid << 2;
+        reg_x.x = (col_offset + 0 < N) ? reg_x.x : -FLT_MAX;
+        reg_x.y = (col_offset + 1 < N) ? reg_x.y : -FLT_MAX;
+        reg_x.z = (col_offset + 2 < N) ? reg_x.z : -FLT_MAX;
+        reg_x.w = (col_offset + 3 < N) ? reg_x.w : -FLT_MAX;
         MD local_md;
         local_md.m = fmaxf(fmaxf(reg_x.x,reg_x.y),fmaxf(reg_x.z,reg_x.w));
         local_md.d = 0.0f;
-        local_md.d += (idx + 0 < N) ? __expf(reg_x.x - local_md.m) : 0.0f;
-        local_md.d += (idx + 1 < N) ? __expf(reg_x.y - local_md.m) : 0.0f;
-        local_md.d += (idx + 2 < N) ? __expf(reg_x.z - local_md.m) : 0.0f;
-        local_md.d += (idx + 3 < N) ? __expf(reg_x.w - local_md.m) : 0.0f;
+        local_md.d += (col_offset + 0 < N) ? __expf(reg_x.x - local_md.m) : 0.0f;
+        local_md.d += (col_offset + 1 < N) ? __expf(reg_x.y - local_md.m) : 0.0f;
+        local_md.d += (col_offset + 2 < N) ? __expf(reg_x.z - local_md.m) : 0.0f;
+        local_md.d += (col_offset + 3 < N) ? __expf(reg_x.w - local_md.m) : 0.0f;
 
         constexpr int NUM_WARPS = (NUM_THREADS + WARP_SIZE - 1) / WARP_SIZE;
         const int warp = tid / WARP_SIZE;
@@ -61,7 +61,7 @@ namespace MiraOperator{
         float block_max = block_res.m;
         float block_d_inverse = __fdividef(1.0f,block_res.d);
         float4 reg_y;
-        if(tid < N){
+        if(col_offset < N){
             reg_y.x = __expf(reg_x.x - block_max) * block_d_inverse;
             reg_y.y = __expf(reg_x.y - block_max) * block_d_inverse;
             reg_y.z = __expf(reg_x.z - block_max) * block_d_inverse;
