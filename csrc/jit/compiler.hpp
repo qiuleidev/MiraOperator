@@ -42,7 +42,7 @@ public:
     explicit Compiler(const std::filesystem::path& library_root_path) {
         // Static library paths
         this->library_root_path = library_root_path;
-        this->library_include_path = library_root_path / "include";
+        this->library_include_path = library_root_path / "MiraOperator" / "include";
         this->library_version = get_library_version();
 
         // Cache settings
@@ -142,10 +142,16 @@ public:
         signature = fmt::format("NVCC{}.{}", nvcc_major, nvcc_minor);
         // The override the compiler flags
 
-        flags = fmt::format("{} -I{} --gpu-architecture={} "
+        // Add include paths for third-party libraries
+        std::filesystem::path third_party_cutlass_path = library_root_path / "third-party" / "cutlass" / "include";
+        std::filesystem::path third_party_fmt_path = library_root_path / "third-party" / "fmt" / "include";
+        
+        flags = fmt::format("{} -I{} -I{} -I{} --gpu-architecture={} "
                             "--compiler-options=-fPIC,-O3,-fconcepts,-Wno-deprecated-declarations,-Wno-abi "
                             "-cubin -O3 --expt-relaxed-constexpr --expt-extended-lambda",
-                            flags, library_include_path.c_str(), sm_version.c_str());
+                            flags, library_include_path.c_str(), 
+                            third_party_cutlass_path.c_str(), third_party_fmt_path.c_str(), 
+                            sm_version.c_str());
     }
 
     void compile(const std::string &code, const std::filesystem::path& dir_path, const std::filesystem::path &cubin_path) const override {

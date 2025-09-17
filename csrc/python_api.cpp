@@ -9,6 +9,7 @@
 #include "jit_kernels/reduce/reduce.hpp"
 #include "jit_kernels/softmax/global_softmax.hpp"
 #include "jit_kernels/softmax/online_softmax.hpp"
+#include "jit_kernels/transpose/transpose.hpp"
 #include "utils/exception.hpp"
 #include <cutlass/core_io.h> 
 #include <cutlass/numeric_types.h>
@@ -260,6 +261,50 @@ torch::Tensor online_softmax(const torch::Tensor& input, torch::Tensor& output) 
     
     return output;
 }
+
+torch::Tensor transpose(const torch::Tensor& input, torch::Tensor& output) {
+    MO_HOST_ASSERT(input.device().is_cuda() && output.device().is_cuda());
+    MO_HOST_ASSERT(input.scalar_type() == torch::kFloat && output.scalar_type() == torch::kFloat);
+    MO_HOST_ASSERT(input.dim() == 2 && output.dim() == 2);
+    MO_HOST_ASSERT(input.sizes()[0] == output.sizes()[1] && input.sizes()[1] == output.sizes()[0]);
+    
+    int m = input.sizes()[0];
+    int n = input.sizes()[1];
+    
+    // 获取输入和输出tensor的GPU指针
+    float* input_ptr = input.data_ptr<float>();
+    float* output_ptr = output.data_ptr<float>();
+
+    // 计算grid和block大小
+    const int Bm = 32;
+    const int Bn = 32;
+    std::pair<int,int> block(32, 8);
+    std::pair<int,int> grid((n + Bn - 1) / Bn, (m + Bm - 1) / Bm);
+    
+    const TransposeRuntime<float>::Args& args = {
+        .m = m,
+        .n = n,
+        .Bm = Bm,
+        .Bn = Bn,
+        .input = input_ptr,
+        .output = output_ptr,
+        .launch_args = LaunchArgs(grid, block)
+    };
+    
+    // 生成kernel代码
+    const auto& code = TransposeRuntime<float>::generate(args);
+    
+    // JIT编译并获取kernel runtime
+    auto kernel_runtime = compiler->build("transpose", code);
+    
+    // 启动kernel
+    TransposeRuntime<float>::launch(kernel_runtime, args);
+    
+    // 同步GPU，确保计算完成
+    cudaDeviceSynchronize();
+    
+    return output;
+}
 } // namespace MiraOperator
 // ReSharper disable once CppParameterMayBeConstPtrOrRef
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -292,4 +337,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("global_softmax",&global_softmax,py::arg("input"),py::arg("output"),"Global softmax using JIT kernel");
     
     m.def("online_softmax",&online_softmax,py::arg("input"),py::arg("output"),"Online softmax using JIT kernel");
+    
+    m.def("transpose",&transpose,py::arg("input"),py::arg("output"),"Transpose using JIT kernel");
 }

@@ -112,7 +112,12 @@ def bench_kineto(fn, kernel_names, num_tests: int = 30,
                         total_time += float(time_str.replace(unit, '')) / scale * int(num_str)
                         total_num += int(num_str)
                         break
-        kernel_times.append(total_time / total_num)
+        # 避免除零错误
+        if total_num > 0:
+            kernel_times.append(total_time / total_num)
+        else:
+            # 如果没有找到匹配的内核，返回一个很大的值表示失败
+            kernel_times.append(float('inf'))
 
     return tuple(kernel_times) if is_tuple else kernel_times[0]
 

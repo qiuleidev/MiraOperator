@@ -20,6 +20,8 @@ set(CMAKE_CUDA_STANDARD 20)
 # 引入头文件和库
 include_directories(MiraOperator/include 
 third-party/cutlass/include 
+third-party/cutlass/include/cute
+third-party/cutlass/include/cutlass
 third-party/cutlass/tools/util/include
 third-party/fmt/include)
 include_directories(${CUDA_TOOLKIT_ROOT_DIR}/targets/x86_64-linux/include ${TORCH_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS})

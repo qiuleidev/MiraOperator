@@ -14,7 +14,7 @@ import torch.utils.cpp_extension
 
 import mira_operator_cpp
 print(sys.modules["mira_operator_cpp"].__file__)
-mira_operator_cpp.init(os.path.dirname(os.path.abspath(__file__)), # Library root directory path
+mira_operator_cpp.init(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), # Library root directory path
     torch.utils.cpp_extension.CUDA_HOME)
 
 # Configs
